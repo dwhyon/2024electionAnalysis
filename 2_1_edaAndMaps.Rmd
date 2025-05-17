@@ -1,0 +1,598 @@
+---
+title: "Map Making and EDA"
+author: "David Hyon"
+date: "2025-04-27"
+output: html_document
+---
+
+## Map Making
+
+
+
+```{r}
+library(tmap)
+library(tigris)
+library(tidyverse)
+library(sf)
+library(tidycensus)
+library(lubridate)
+library(rlang)
+library(corrplot)
+
+tmap_mode("plot")
+
+
+
+states <- states(cb=TRUE) %>% 
+  mutate(STATEFP = as.numeric(STATEFP)) %>% 
+  filter(STATEFP < 60)
+
+us <- states$STATEFP
+
+counties <- counties(cb=TRUE) %>% 
+  mutate(
+    STATEFP = as.numeric(STATEFP),
+    county_fips = as.numeric(COUNTYFP)) %>% 
+  filter(STATEFP %in% us)
+
+
+election <- read_csv("./cleanData/master.csv") %>% 
+  drop_na() %>% 
+  mutate(
+    max_new_death_rate = ifelse(is.infinite(max_new_death_rate), 0, max_new_death_rate),
+    per_diff_24 = per_gop_24 - per_dem_24,
+    per_diff_20 = per_gop_20 - per_dem_20,
+    per_diff_16 = per_gop_16 - per_dem_16,
+    per_diff_24_pop = per_diff_24 * total_votes_24,
+    per_diff_20_pop = per_diff_20 * total_votes_20,
+    per_diff_16_pop = per_diff_16 * total_votes_16
+  )
+
+```
+## Data Exploration
+```{r}
+# Select only numeric columns
+results_24 <- election %>% 
+  select((starts_with("trump_")))
+
+
+r2 <- results_24 %>% 
+  mutate(
+    `2016` = trump_16,
+    `2020` = trump_20,
+    `2024` = trump_24,
+    .keep = "unused"
+  )
+
+# Create correlation matrix
+cor_matrix <- cor(r2, use = "complete.obs")
+
+
+corrplot(cor_matrix, method = "color", type = "upper", tl.cex = 0.8)
+
+
+```
+
+
+```{r}
+per_diff24 <- election %>% 
+  pull(per_diff_24) 
+
+per_diff20 <- election %>% 
+  pull(per_diff_20) 
+
+per_diff16 <- election %>% 
+  pull(per_diff_16)
+
+
+per_diff24pop <- election %>% 
+  pull(per_diff_24_pop) 
+
+per_diff20pop <- election %>% 
+  pull(per_diff_20_pop) 
+
+per_diff16pop <- election %>% 
+  pull(per_diff_16_pop)
+
+
+par(mfrow = c(1, 2))
+
+
+hist(per_diff24)
+hist(per_diff24pop)
+hist(per_diff16)
+
+
+
+per_diff24pop %>% 
+  quantile(probs = c(0, 0.333, .667, 1))
+
+per_diff24 %>% 
+  quantile(probs = c(0, 0.333, .667, 1))
+
+partyLeaning <- case_when(per_diff24 > 0.1 ~ 3,
+                          per_diff24 < -0.1 ~ 1,
+                          .default = 2)
+
+partyLeaningPop <- case_when(per_diff24pop > 6196.495 ~ 3,
+                          per_diff24pop < 1791.967 ~ 1,
+                          .default = 2)
+
+```
+
+
+
+
+
+## PCA
+
+```{r}
+
+election %>% select(1:35)
+
+pr.out <- prcomp(election %>% select(36:173) %>% select(where(is.numeric)), scale = TRUE)
+
+
+names(pr.out)
+
+
+dim(pr.out$x)
+
+```
+
+# Scree Plots
+
+```{r}
+pr.var <- pr.out$sdev^2
+
+pve <- pr.var / sum(pr.var)
+
+par(mfrow = c(1, 2))
+plot(pve, xlab = "Principal Component",
+  ylab = "Proportion of Variance Explained")
+plot(cumsum(pve), xlab = "Principal Component",
+  ylab = "Cumulative Proportion of Variance Explained",
+  ylim = c(0, 1))
+
+ggplot() + 
+  geom_point(aes(x = seq(1,length(pve), 1),y = cumsum(pve))) +
+  labs(x = "PCA", y = "Cumulative Proportion of Variance Explained") +
+  scale_x_continuous(breaks = c(1,seq(10, 138, 10)),
+                     limits = c(NA, NA))+ 
+  geom_hline(yintercept = 0.5, linetype = "dashed")
+
+
+#cumsum(pve[1:11])
+```
+
+
+
+```{r}
+# Step 2: Create a data frame for plotting
+pca_data <- as.data.frame(pr.out$x)
+
+# Add back the variable you want to color by
+pca_data$trump24 <- election$trump_24   
+pca_data$trump20 <- election$trump_20
+pca_data$trump16 <- election$trump_16
+pca_data$partyLeaning <- partyLeaning
+pca_data$partyLeaningPop <- partyLeaningPop
+
+# Step 3: Make the PCA plot
+ggplot(pca_data, aes(x = PC1, y = PC2, color = factor(trump24))) +
+  geom_point(size = 1) +
+  scale_color_manual(
+    values = c("0" = "blue", "1" = "red") 
+  ) +
+  labs(
+    title = "PCA Plot",
+    x = "Principal Component 1",
+    y = "Principal Component 2",
+    color = "Trump 24"
+  ) +
+  theme_minimal()
+
+
+
+```
+
+
+
+
+```{r}
+# Step 3: Make the PCA plot
+ggplot(pca_data, aes(x = PC1, y = PC2, color = factor(partyLeaning))) +
+  geom_point(size = 1) +
+  scale_color_manual(
+    values = c("1" = "blue", "2" = "purple", "3" = "red") 
+  ) +
+  labs(
+    title = "PCA Plot",
+    x = "Principal Component 1",
+    y = "Principal Component 2",
+    color = "Party Leaning"
+  ) +
+  theme_minimal()
+```
+
+
+```{r}
+# Step 3: Make the PCA plot
+ggplot(pca_data, aes(x = PC1, y = PC2, color = factor(partyLeaningPop))) +
+  geom_point(size = 1) +
+  scale_color_manual(
+    values = c("1" = "blue", "2" = "purple", "3" = "red") 
+  ) +
+  labs(
+    title = "Party leaning vote count PCA Plot",
+    x = "Principal Component 1",
+    y = "Principal Component 2",
+    color = "Party Leaning Vote Count"
+  ) +
+  theme_minimal()
+```
+
+
+
+```{r}
+
+# Add back the variable you want to color by
+pca_data$bellwether <- election$bellweather   # <-- replace 'your_variable' with your column name!
+
+# Step 3: Make the PCA plot
+ggplot(pca_data, aes(x = PC1, y = PC2, color = factor(bellwether))) +
+  geom_point(size = 1) +
+  scale_color_manual(
+    values = c("0" = "blue", "1" = "red") 
+  ) +
+  labs(
+    title = "PCA Plot",
+    x = "Principal Component 1",
+    y = "Principal Component 2",
+    color = "Bellwether"
+  ) +
+  theme_minimal()
+```
+
+
+```{r}
+#library(GGally)
+
+# Set color palette (you can adjust this)
+colors <- ifelse(pca_data$trump24 == 1, "red", "blue")
+
+# Save to high-resolution PNG
+png(filename = "./pca_pairs_plot.png", width = 2000, height = 2000, res = 300)
+# Make a nice ggpairs plot
+pairs(pca_data[, 1:11],
+      col = colors,
+      pch = 19,       # Solid circles
+      cex = 0.5,
+      main = "Pairwise Plot of First 11 PCA Components")
+
+
+
+
+
+```
+
+
+```{r}
+# Step 3: Make the PCA plot
+ggplot(pca_data, aes(x = PC1, y = PC11, color = factor(trump24))) +
+  geom_point(size = 1) +
+  #ylim(-10,10) +
+  scale_color_manual(
+    values = c("0" = "blue", "1" = "red") 
+  ) +
+  labs(
+    title = "PCA Plot",
+    x = "Principal Component 1",
+    y = "Principal Component 11",
+    color = "Trump 24"
+  ) +
+  theme_minimal()
+
+```
+
+
+```{r}
+# Step 3: Make the PCA plot
+ggplot(pca_data, aes(x = PC5, y = PC6, color = factor(trump24))) +
+  geom_point(size = 1) +
+  #ylim(-10,10) +
+  scale_color_manual(
+    values = c("0" = "blue", "1" = "red") 
+  ) +
+  labs(
+    title = "PCA Plot",
+    x = "Principal Component 5",
+    y = "Principal Component 6",
+    color = "Trump 24"
+  ) +
+  theme_minimal()
+```
+
+PCA Pairs with Party Leaning
+
+```{r}
+# Set color palette (you can adjust this)
+colors <- case_when(pca_data$partyLeaning == 3 ~ "red", 
+                    pca_data$partyLeaning == 1 ~ "blue",
+                    pca_data$partyLeaning == 2 ~ "purple")
+
+# Save to high-resolution PNG
+png(filename = "./pca_partyLeaning_plot.png", width = 2000, height = 2000, res = 300)
+# Make a nice ggpairs plot
+pairs(pca_data[, 1:11],
+      col = colors,
+      pch = 19,       # Solid circles
+      cex = 0.5,
+      main = "Pairwise Plot of First 11 PCA Components")
+
+
+
+```
+
+PCA Pairs with Bellwethers
+```{r}
+# Set color palette (you can adjust this)
+colors <- case_when(pca_data$bellwether == 1 ~ "red", 
+                    pca_data$bellwether == 0 ~ "blue")
+
+# Save to high-resolution PNG
+png(filename = "./pca_bellwether_plot.png", width = 2000, height = 2000, res = 300)
+# Make a nice ggpairs plot
+pairs(pca_data[, 1:11],
+      col = colors,
+      pch = 19,       # Solid circles
+      cex = 0.5,
+      main = "Pairwise Plot of First 11 PCA Components")
+
+
+
+```
+
+# Swing State Analysis
+```{r}
+
+swingers <- c("Arizona", "Wisconsin", "Michigan", "Pennsylvania", "Georgia", "Nevada", "North Carolina")
+
+swingStatesRaw <- election %>% 
+  mutate(
+    swing = if_else(state_name %in% swingers, 1, 0)
+  )
+
+pca_data$swingState <- swingStatesRaw$swing
+
+ggplot(pca_data, aes(x = PC1, y = PC2, color = factor(swingState))) +
+  geom_point(size = 1) +
+  scale_color_manual(
+    values = c("0" = "blue", "1" = "red") 
+  ) +
+  labs(
+    title = "PCA Plot",
+    x = "Principal Component 1",
+    y = "Principal Component 2",
+    color = "Swing State"
+  ) +
+  theme_minimal()
+
+#write_csv(swingStatesRaw, "./modelData.csv")
+
+```
+
+# Subset to swing states
+
+```{r}
+
+swingStates <- swingStatesRaw %>% 
+  filter(
+    swing == 1
+  )
+
+
+pr.out2 <- prcomp(swingStates %>% select(36:173) %>% select(where(is.numeric)), scale = TRUE)
+
+
+pr.var2 <- pr.out2$sdev^2
+
+pve2 <- pr.var2 / sum(pr.var2)
+
+par(mfrow = c(1, 2))
+plot(pve2, xlab = "Principal Component",
+  ylab = "Proportion of Variance Explained")
+plot(cumsum(pve2), xlab = "Principal Component",
+  ylab = "Cumulative Proportion of Variance Explained",
+  ylim = c(0, 1))
+
+# Takes 8 PCA's to reach 50% variance
+
+```
+
+```{r}
+
+# Step 2: Create a data frame for plotting
+pca_data2 <- as.data.frame(pr.out2$x)
+
+# Add back the variable you want to color by
+pca_data2$trump24 <- swingStates$trump_24   
+pca_data2$trump20 <- swingStates$trump_20
+pca_data2$trump16 <- swingStates$trump_16
+#pca_data2$partyLeaning <- partyLeaning
+
+
+# Step 3: Make the PCA plot
+ggplot(pca_data2, aes(x = PC1, y = PC2, color = factor(trump24))) +
+  geom_point(size = 1) +
+  scale_color_manual(
+    values = c("0" = "blue", "1" = "red") 
+  ) +
+  labs(
+    title = "PCA Plot Swing States",
+    x = "Principal Component 1",
+    y = "Principal Component 2",
+    color = "Trump 24"
+  ) +
+  theme_minimal()
+
+
+
+
+```
+
+```{r}
+colors <- ifelse(pca_data2$trump24 == 1, "red", "blue")
+
+# Save to high-resolution PNG
+png(filename = "./pca_swing_plot.png", width = 4000, height = 4000, res = 600)
+# Make a nice ggpairs plot
+pairs(pca_data2[, 1:8],
+      col = colors,
+      pch = 19,       # Solid circles
+      cex = 0.5,
+      main = "Pairwise Plot of First 8 PCA Components")
+
+```
+
+
+
+# Non swing states
+
+```{r}
+
+nonSwingStates <- swingStatesRaw %>% 
+  filter(
+    swing == 0
+  )
+
+
+pr.out3 <- prcomp(nonSwingStates %>% select(36:173) %>% select(where(is.numeric)), scale = TRUE)
+
+
+pr.var3 <- pr.out3$sdev^2
+
+pve3 <- pr.var3 / sum(pr.var3)
+
+par(mfrow = c(1, 2))
+plot(pve3, xlab = "Principal Component",
+  ylab = "Proportion of Variance Explained")
+plot(cumsum(pve3), xlab = "Principal Component",
+  ylab = "Cumulative Proportion of Variance Explained",
+  ylim = c(0, 1))
+
+# Takes 11 to reach 50%
+
+```
+
+```{r}
+
+# Step 2: Create a data frame for plotting
+pca_data3 <- as.data.frame(pr.out3$x)
+
+# Add back the variable you want to color by
+pca_data3$trump24 <- nonSwingStates$trump_24   
+pca_data3$trump20 <- nonSwingStates$trump_20
+pca_data3$trump16 <- nonSwingStates$trump_16
+#pca_data2$partyLeaning <- partyLeaning
+
+
+# Step 3: Make the PCA plot
+ggplot(pca_data3, aes(x = PC1, y = PC2, color = factor(trump24))) +
+  geom_point(size = 1) +
+  scale_color_manual(
+    values = c("0" = "blue", "1" = "red") 
+  ) +
+  labs(
+    title = "PCA Plot Non Swing States",
+    x = "Principal Component 1",
+    y = "Principal Component 2",
+    color = "Trump 24"
+  ) +
+  theme_minimal()
+
+
+
+
+```
+
+# Clustering PCA's
+
+
+```{r}
+mclust_model <- Mclust(pca_data[,1:11], G =2)
+```
+```{r}
+summary(mclust_model)
+```
+```{r}
+plot(mclust_model, what = "classification", dimens = c(1,2), main = "Cluster Classification")
+```
+
+
+
+
+
+
+```{r}
+
+tmap_mode("view")
+stateMap <- tm_shape(states) + tm_borders()
+
+countyMap <- tm_shape(counties) + tm_polygons()
+
+
+extraCounties <- election %>% 
+  anti_join(counties, by = join_by(GEOID))
+
+
+
+bellCounty <- counties %>% 
+  left_join(election, by = join_by(GEOID) ) %>%
+  filter(bellweather ==1)
+
+changeCounty <- counties %>% 
+  left_join(election, by = join_by(GEOID) ) %>%
+  filter(change ==1)
+```
+
+
+
+```{r}
+stateMap + tm_shape(bellCounty) + tm_fill(col="red") + tm_shape(changeCounty) + tm_borders(col = "blue")
+```
+
+
+
+
+```{r}
+
+bellCounty_2 <- counties %>% 
+  left_join(election, by = join_by(GEOID) ) %>%
+  filter(bell_20_24 ==1)
+
+changeCounty_2 <- counties %>% 
+  left_join(election, by = join_by(GEOID) ) %>%
+  filter(change_20_24 ==1)
+
+stateMap + tm_shape(bellCounty_2) + tm_fill(col="red") + tm_shape(changeCounty_2) + tm_borders(col = "blue")
+
+```
+
+
+
+```{r}
+
+dataCOuntyMap <- dataCounty %>% 
+  st_union() #%>% 
+  #st_simplify(dTolerance = 100000)
+
+```
+
+
+
+
+```{r}
+counties$
+```
+

@@ -1,0 +1,505 @@
+---
+title: "project"
+author: "David Hyon"
+date: "2025-04-26"
+output: pdf_document
+---
+
+# Load packages
+
+```{r}
+library(tigris)
+library(tidyverse)
+library(sf)
+library(tidycensus)
+library(lubridate)
+library(rlang)
+```
+
+
+
+
+# Gameplan
+
+# Election
+
+## Read in 2024
+
+```{r}
+electionRaw <- read_csv("./2024_US_County_Level_Presidential_Results.csv")
+
+
+election24 <- electionRaw %>% 
+  select(county_fips, 1:9) %>% 
+  mutate(
+    trump = case_when(per_gop > per_dem ~ 1,
+                      per_dem > per_gop ~ 0,
+                      per_gop == per_dem ~ -999,
+                      .default = NA),
+    bell = if_else(trump == 1, 1, 0)
+  )
+
+table(election24$trump, useNA = c("always"))
+rm(electionRaw)
+```
+
+## Read in 2020
+
+```{r}
+electionRaw <- read_csv("./2020_US_County_Level_Presidential_Results.csv")
+
+
+election20 <- electionRaw %>% 
+  # select(county_fips, 1:9) %>% # Keeps state and county name
+  select(county_fips, 4:9) %>%  # Only voting data
+  mutate(
+    trump = case_when(per_gop > per_dem ~ 1,
+                      per_dem > per_gop ~ 0,
+                      per_gop == per_dem ~ -999,
+                      .default = NA),
+    bell = if_else(trump == 0, 1, 0)
+  )
+
+table(election20$trump, useNA = c("always"))
+rm(electionRaw)
+str(election20)
+```
+## Read in 2016
+
+```{r}
+electionRaw <- read_csv("./2016_US_County_Level_Presidential_Results.csv")
+
+
+election16 <- electionRaw %>% 
+  mutate(
+    county_fips = combined_fips
+  ) %>% 
+  select(county_fips, 2:7) %>% 
+  mutate(
+    trump = case_when(per_gop > per_dem ~ 1,
+                      per_dem > per_gop ~ 0,
+                      per_gop == per_dem ~ -999,
+                      .default = NA),
+    bell = if_else(trump == 1, 1, 0)
+  )
+
+table(election16$trump, useNA = c("always"))
+
+rm(electionRaw)
+str(election16)
+```
+
+## Clean and Combine
+
+```{r}
+
+# Deal with special case for Connecticut which changed from counties to Planning regions in 2024
+
+
+
+
+election <- election24 %>% 
+  left_join(election20, by = join_by(county_fips), suffix = c("_24", "")) %>%
+  mutate(
+    GEOID = county_fips,
+    county_fips = as.numeric(county_fips)
+  ) %>% 
+  left_join(election16, by = join_by(county_fips), suffix = c("_20", "_16")) %>% 
+  mutate(
+    bellweather = ifelse(bell_16 == 1 & bell_20 == 1 & bell_24 == 1, 1, 0),
+    pop_vote_bell = ifelse(trump_16 == 0 & trump_20 == 0 & trump_24 == 1, 0, 1),
+    bell_20_24 = ifelse(bell_20 == 1 & bell_24 == 1, 1, 0),
+    change = ifelse(trump_16 == trump_20 & trump_20 == trump_24, 0, 1),
+    change_20_24 = ifelse(trump_20 == trump_24, 0, 1)
+  ) %>% 
+  filter(!(state_name %in% c("Alaska","Connecticut", "District of Columbia")))
+
+table(election$change)
+table(election$bellweather)
+table(election$pop_vote_bell)
+
+#rm(election16, election20, election24)
+
+```
+```{r}
+write_csv(election, "./cleanData/election.csv")
+```
+
+
+
+
+
+## Covid
+
+There are 12 Datasets available with the COVID data
+
+1. Consumer Spending
+
+```{r}
+spendingRaw <- read_csv("./EconomicTracker-main/data/Affinity - County - Daily.csv")
+
+#str(spendingCounty)
+
+#spendingNational <- read_csv("./EconomicTracker-main/data/Affinity - National - Daily.csv")
+
+#str(spendingNational)
+
+spendingRaw %>% 
+  #filter(year == 2022) %>% 
+  mutate(
+    spend_all = ifelse(spend_all == ".", NA, spend_all),
+    missing = ifelse(is.na(spend_all), 1, 0)
+  ) %>% 
+  group_by(countyfips) %>% 
+  filter(countyfips==1001)
+
+```
+```{r}
+
+pad_zero <- function(x) {
+  x %>%
+    as.character() %>%
+    if_else(nchar(.) == 1, paste0("0", .), .)
+}
+
+spend <- spendingRaw %>% 
+  mutate(
+    spend_all = ifelse(spend_all == ".", NA, spend_all),
+    missing = ifelse(is.na(spend_all), 1, 0)
+  ) %>% 
+  mutate(
+    month = pad_zero(month),
+    day = pad_zero(day)
+  ) %>% 
+  unite("date", year, month, day, sep = "", remove = FALSE) %>% 
+  mutate(
+    date = ymd(date),
+    woy = week(date),
+    dow = wday((date))
+  ) %>% 
+  filter(dow==1)%>% 
+  mutate(
+    spend_all = as.numeric(spend_all)
+  ) 
+  
+
+  
+```
+
+```{r}
+spend %>% 
+  filter(!is.na(spend_all))# %>% 
+  # group_by(countyfips) %>% 
+  # mutate(
+  #   nobs = n()
+  # ) %>% 
+ # count(countyfips)#%>% 
+  #distinct(n)
+  #()
+```
+
+```{r}
+spendingRaw %>% 
+  filter(countyfips %in% c(48003, 48227, 48475, 39051)) %>% 
+  arrange(countyfips) %>% 
+  view()
+```
+
+
+```{r}
+summarise_changes <- function(data, column, tag) {
+  column_sym <- ensym(column)         # capture column name as symbol
+  column_name <- tag # get the string name
+  
+  data %>%
+    summarise(
+      periods = n(),
+      !!paste0("final_", column_name) := last(!!column_sym),
+      !!paste0("average_", column_name) := mean(!!column_sym, na.rm = TRUE),
+      !!paste0("sd_", column_name) := sd(!!column_sym, na.rm = TRUE),
+      !!paste0("positive_", column_name) := sum(!!column_sym > 0, na.rm = TRUE),
+      !!paste0("negative_", column_name) := sum(!!column_sym < 0, na.rm = TRUE),
+      !!paste0("max_increase_", column_name) := max(!!column_sym, na.rm = TRUE),
+      !!paste0("max_decrease_", column_name) := min(!!column_sym, na.rm = TRUE),
+      .groups = "drop"
+    )
+}
+```
+
+
+
+
+```{r}
+spend %>% 
+  mutate(
+    spend_all = as.numeric(spend_all)
+  ) %>% 
+  filter(!is.na(spend_all)) %>% 
+  filter(year==2020) %>% 
+  group_by(woy) %>%
+  summarise(
+    count = n(),                  # number of observations
+    mean_spend = mean(spend_all),  # mean of spend_all
+    min_spend = min(spend_all),
+    quan25 = quantile(spend_all, 0.25),
+    median = median(spend_all),
+    quan75 = quantile(spend_all, 0.75),
+    max_spend = max(spend_all), 
+    date = first(date), # maximum of spend_all
+    .groups = "drop"               # ungroup after summarizing
+)
+```
+```{r}
+# Summarize by countyfips
+spendingFinal <- spend %>%
+  filter(!is.na(spend_all)) %>% 
+  group_by(countyfips) %>%
+  mutate(
+    check = n()
+  ) %>% 
+  filter(check > 200) %>% 
+  # filter(countyfips==1001) %>% 
+  #summarise(mean = mean(spend_all))
+  # summarise(
+  #   periods = n(),
+  #   final_change = last(spend_all),
+  #   average_change = mean(spend_all, na.rm = TRUE),
+  #   sd_change = sd(spend_all, na.rm = TRUE),
+  #   positive_periods = sum(spend_all > 0),
+  #   negative_periods = sum(spend_all < 0),
+  #   max_increase = max(spend_all, na.rm = TRUE),
+  #   max_decrease = min(spend_all, na.rm = TRUE),
+  #   .groups = "drop"  # Ungroup after summarizing
+  # )
+  summarise_changes(spend_all, "consumer_spending")
+# Print summary
+head(spendingFinal)
+
+write_csv(spendingFinal,"./cleanData/consumerSpending.csv")
+
+```
+2. Small Business
+```{r}
+businessRaw <- read_csv("./EconomicTracker-main/data/Womply - County - Weekly.csv")
+```
+
+```{r}
+sbOpen <- businessRaw %>% 
+  group_by(countyfips) %>% 
+  summarise_changes(merchants_all, "sb_open")
+
+sbRevenue <- businessRaw %>% 
+  group_by(countyfips) %>% 
+  summarise_changes(revenue_all, "sb_rev")
+```
+
+```{r}
+businessRaw %>% 
+  select(countyfips) %>% 
+  distinct()
+```
+
+
+
+## Job Postings
+```{r}
+jobRaw <- read_csv("./EconomicTracker-main/data/Job Postings - State - Weekly.csv")
+```
+```{r}
+job <- jobRaw %>% 
+  filter(year < 2025) %>% 
+  filter(!(year == 2024 & month >= 11)) %>% 
+  mutate(
+    bg_posts = ifelse(bg_posts == ".", NA, bg_posts)
+  )
+
+job %>% filter(!is.na(bg_posts))
+```
+
+Too much missing data, not gonna use this.
+
+
+## Employment
+
+```{r}
+rm(job, jobRaw)
+employmentRaw <- read_csv("./EconomicTracker-main/data/Employment - County - Weekly.csv")
+```
+```{r}
+
+  
+employmentRaw[employmentRaw == "."] <- NA
+
+
+employment <- employmentRaw %>% 
+  filter(!is.na(emp)) %>% 
+  filter(year < 2025) %>% 
+  filter(!(year == 2024 & month >= 11)) %>% 
+  mutate(
+    emp = as.numeric(emp)
+  )
+
+
+employmentClean <- employment %>% 
+  group_by(countyfips) %>% 
+  summarise_changes(emp, "employment")
+
+```
+
+## Unemployment
+
+```{r}
+
+uiCountyRaw <- read_csv("./EconomicTracker-main/data/UI Claims - County - Weekly.csv")
+
+uiCountyRaw[uiCountyRaw == "."] <- NA 
+
+uiCounty <- uiCountyRaw %>% 
+  filter(!is.na(initclaims_rate_regular))%>% 
+  filter(year < 2025) %>% 
+  filter(!(year == 2024 & month >= 11)) %>% 
+  mutate(
+    initclaims_rate_regular = as.numeric(initclaims_rate_regular)
+  )
+  
+uiCountyClean <- uiCounty %>% 
+  group_by(countyfips) %>% 
+  summarise_changes(initclaims_rate_regular, "ui_claims_rate") %>% 
+  select(-6:-7)
+
+
+
+
+```
+
+```{r}
+covidRaw1 <- read_csv("./EconomicTracker-main/data/COVID - County - Daily 2020.csv")
+
+covidRaw2 <- read_csv("./EconomicTracker-main/data/COVID - County - Daily 2021.csv")
+
+covidRaw3 <- read_csv("./EconomicTracker-main/data/COVID - County - Daily 2022.csv")
+
+covidRaw <- covidRaw1 %>% 
+  bind_rows(covidRaw2, covidRaw3)
+
+
+covidRaw[covidRaw == "."] <- NA 
+
+
+covid <- covidRaw %>% 
+  mutate(
+    month = pad_zero(month),
+    day = pad_zero(day)
+  ) %>% 
+  unite("date", year, month, day, sep = "", remove = FALSE) %>% 
+  mutate(
+    date = ymd(date),
+    woy = week(date),
+    dow = wday((date))
+  ) %>% 
+  filter(dow==1) %>% 
+  mutate(across(5:29, as.numeric))
+
+
+covid  %>% 
+  filter(countyfips==6057)
+  #filter(!is.na(case_count))
+
+
+covid %>%
+  
+  filter(countyfips==6057) %>% str()
+  #filter(case_count>0)
+
+
+covidClean <- covid %>% 
+  group_by(countyfips) %>% 
+  summarize(
+    final_death_rate = max(death_rate, na.rm=TRUE),
+    final_case_rate = max(case_rate, na.rm=TRUE),
+    max_new_death_rate = max(new_death_rate, na.rm = TRUE),
+    max_new_case_rate = max(new_case_rate, na.rm = TRUE),
+    weeks = sum(!is.na(case_count)),
+    avg_new_case_rate = sum(new_case_rate, na.rm = TRUE) / weeks,
+    avg_new_death_rate = sum(new_death_rate, na.rm = TRUE) / weeks,
+  ) %>% 
+  mutate(across(2:8, ~ifelse(weeks==0, 0, .x)))
+
+```
+Google Mobility
+
+
+```{r}
+googleRaw <- read_csv("./EconomicTracker-main/data/Google Mobility - County - Daily.csv")
+
+
+google <- googleRaw %>% 
+  mutate(
+    month = pad_zero(month),
+    day = pad_zero(day)
+  ) %>% 
+  unite("date", year, month, day, sep = "", remove = FALSE) %>% 
+  mutate(
+    date = ymd(date),
+    woy = week(date),
+    dow = wday((date))
+  ) %>% 
+  filter(date >= ymd("2020-03-01") & date <= ymd("2022-12-31"))
+
+
+google %>% 
+  filter(countyfips==1023)
+#google[google == "."] <- NA 
+
+googleClean <- google %>% 
+  group_by(countyfips) %>% 
+  mutate(
+    google = as.numeric(gps_away_from_home)
+  ) %>% 
+  filter(!is.na(google)) %>% 
+  summarise_changes(google, "away_from_home") %>% 
+  mutate(
+    percent_positive = positive_away_from_home/ (positive_away_from_home + negative_away_from_home),
+    .keep = "unused"
+  )
+
+```
+
+# Join all datasets
+
+```{r}
+countyData <- election %>% 
+  left_join(covidClean, by =join_by(county_fips==countyfips)) %>% 
+  left_join(employmentClean, by =join_by(county_fips==countyfips)) %>%
+  left_join(googleClean, by =join_by(county_fips==countyfips)) %>% 
+  left_join(sbOpen, by =join_by(county_fips==countyfips)) %>% 
+  left_join(sbRevenue, by =join_by(county_fips==countyfips)) %>% 
+  left_join(spendingFinal, by =join_by(county_fips==countyfips)) %>% 
+  left_join(uiCountyClean, by =join_by(county_fips==countyfips)) %>% 
+  select(-starts_with("periods"))
+```
+
+
+
+
+## Imputing Missing Data
+
+just use state, and fill in for missing counties, use the same variables as available for county data. This 
+makes it an apples to apples comparison. For swing states / bellwether counties, explore this in EDA, just
+use classification models for predicting 2024 across country. 
+
+
+
+
+
+
+## Demographic
+
+Get 2010 and 2020, as well as ACS
+- Age
+- Race
+- Sex
+- Education
+- Income
+
+

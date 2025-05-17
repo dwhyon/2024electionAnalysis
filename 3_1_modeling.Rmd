@@ -1,0 +1,565 @@
+---
+title: "Modeling"
+author: "David Hyon"
+date: "2025-04-28"
+output:
+  html_document: default
+  pdf_document: default
+---
+
+```{r setup, include=FALSE}
+
+set.seed(123)
+
+
+# Load necessary library
+library(e1071)
+library(tidyverse)
+
+election <- read_csv("./modelData.csv") %>% 
+  select(state_name, county_name, everything()) %>% 
+  select(
+    -GEOID,
+    -state_name_24,
+    -county_name_24,
+    -statefips
+  )
+
+
+
+# Make sure the response is a factor for classification
+election$trump_24 <- as.factor(election$trump_24)
+
+# Create the predictor matrix and response vector
+X <- election[, 33:169]
+y <- election$trump_24
+
+
+dat <- data.frame(x = X, y = y)
+
+train <- sample(3100, 3100*0.8)
+
+trainDat <- dat[train,]
+testDat <- dat[-train,]
+
+```
+
+
+# SVM
+
+```{r}
+
+# Build the SVM model
+svm_model_linear <- svm(y ~ ., data = trainDat, 
+                 kernel = "linear",   # Try "radial" if nonlinear
+                 scale = TRUE)        # Standardize predictors
+
+# View model summary
+summary(svm_model_linear)
+```
+
+
+
+```{r}
+
+set.seed(123)
+#plot(svm_model_linear, dat[,1:2])
+
+
+# tune.out <- tune(svm, y∼., data = dat, kernel = "linear",
+#   ranges = list(cost = c(0.001, 0.01, 0.1, 1, 5, 10, 100)))
+
+# tune.out <- tune(svm, y ~ ., data = trainDat, kernel = "linear", probability = TRUE, 
+#                  ranges = list(cost = c(0.001, 0.01, 0.1, 1, 5)))
+```
+
+```{r}
+# summary(tune.out)
+```
+```{r}
+set.seed(123)
+
+svc <- svm(y ~ ., data = trainDat, 
+                 kernel = "linear",
+            probability = TRUE,
+           cost = 0.01,
+           # Try "radial" if nonlinear
+                 scale = TRUE)
+
+
+ypred <- predict(svc, testDat)
+table(predict = ypred, truth = testDat$y)
+
+table(dat$y)
+
+```
+Misclassification rate of 7%. 93% accuracy. There is a data imbalance, so 85% of counties voted for trump. Still, this is better than random. 
+
+Time for a support vector machine
+
+```{r}
+# set.seed(123)
+# tune.out_radial <- tune(svm, y ~ ., data = trainDat, kernel = "radial",  probability = TRUE,
+#                         ranges = list(cost = c(0.1, 1,10, 100),
+#                                       gamma = c(0.5, 1, 2, 3, 4)))
+```
+
+```{r}
+# summary(tune.out_radial)
+```
+```{r}
+# summary(tune.out_radial$best.model)
+
+
+svm_radial <- svm(y ~ ., data = trainDat, 
+                 kernel = "radial",
+            probability = TRUE,
+           cost = 0.01,
+           # Try "radial" if nonlinear
+                 gamma = 0.5)
+
+ypred_radial <- predict(svm_radial, testDat)
+table(predict = ypred_radial, truth = testDat$y)
+```
+So the SVC does a better job than SVM with radial kernel. 
+
+
+# Tree-based methods
+```{r}
+set.seed(123)
+
+library(tree)
+
+tree.data <- tree(y ~ .,dat,subset = train)
+tree.pred <- predict(tree.data, testDat, type = "class")
+table(tree.pred, y[-train])
+
+
+```
+10% Error. Better than random. But having a tough time predicting democrat counties. 
+
+
+```{r}
+
+set.seed(123)
+
+cv.data <- cv.tree(tree.data, FUN = prune.misclass)
+names(cv.data)
+cv.data
+```
+```{r}
+par(mfrow = c(1, 2))
+plot(cv.data$size, cv.data$dev, type = "b")
+plot(cv.data$k, cv.data$dev, type = "b")
+```
+
+```{r}
+set.seed(123)
+
+
+prune.data <- prune.misclass(tree.data, best = 8)
+plot(prune.data)
+text(prune.data, pretty = 0)
+```
+```{r}
+set.seed(123)
+
+tree.pred <- predict(prune.data, testDat, type = "class")
+table(tree.pred, y[-train])
+```
+Basically the same error, but with less nodes. 
+
+## Random Forest
+
+```{r}
+
+set.seed(123)
+
+library(randomForest)
+
+rf.data <- randomForest(y ~ ., data = trainDat, importance = TRUE)
+rf.pred <- predict(rf.data, newdata = testDat, type = "class")
+table(rf.pred, y[-train])
+
+```
+7%, on par with linear SVM
+
+```{r}
+#importance(rf.data)
+```
+
+```{r}
+varImpPlot(rf.data, n.var = 10)
+```
+```{r}
+# Extract importance
+var_imp <- importance(rf.data)
+var_imp_df <- as.data.frame(var_imp)
+var_imp_df$Variable <- rownames(var_imp_df)
+
+# Sort and select top 8
+accuracy <- var_imp_df[order(var_imp_df$MeanDecreaseAccuracy, decreasing = TRUE), ][1:10, ]
+gini <- var_imp_df[order(var_imp_df$MeanDecreaseGini, decreasing = TRUE), ][1:10, ]
+
+varNameAcc <- c("% White", "% Black", "Masters Degree %", "Professional Degree %", "Max COVID-19 Weekly Death Rate", "Population", "PhD %", "% Asian", "COVID-19 Death Rate", "High School Diploma %")
+
+
+varNameGini <- c("% White", "Masters Degree %","% Black",   "Professional Degree %",  "Max COVID-19 Weekly Death Rate","PhD %","% Asian", "High School Diploma %", "Population", "Bachelors Degree %")
+
+# Plot with ggplot2
+accPlot <- ggplot(accuracy, aes(x = reorder(varNameAcc, MeanDecreaseAccuracy), y = MeanDecreaseAccuracy)) +
+  geom_point(col = "steelblue") +
+  coord_flip() +  # Horizontal bars
+  labs(#title = "Top 8 Variable Importances",
+       x = "",
+       y = "Mean Decrease Accuracy") #+
+  #theme_minimal()
+
+giniPlot <- ggplot(gini, aes(x = reorder(varNameGini, MeanDecreaseGini), y = MeanDecreaseGini)) +
+  geom_point(col = "steelblue") +
+  coord_flip() +  # Horizontal bars
+  labs(#title = "Top 8 Variable Importances",
+       x = "",
+       y = "Mean Decrease GINI")
+
+
+gridExtra::grid.arrange(accPlot, giniPlot, ncol=2)
+```
+## Boosted Trees
+
+```{r}
+set.seed(123)
+
+library(gbm)
+
+trainDatBoost <- trainDat %>% 
+  mutate(
+    y = as.numeric(y)-1
+  )
+
+testDatBoost <- testDat %>% 
+  mutate(
+    y = as.numeric(y)-1
+  )
+
+
+boost.data <- gbm(y ~ ., data = trainDatBoost, distribution = "bernoulli", 
+                  n.trees = 5000, interaction.depth = 4)
+                  
+summary(boost.data)
+
+```
+```{r}
+# 1. Get relative influence WITHOUT plotting
+rel_influence <- summary(boost.data, plotit = FALSE)
+
+# 2. Take top 10 variables
+top10 <- rel_influence[order(-rel_influence$rel.inf), ][1:10, ]
+
+boostVarNames <- c("% White", "Masters Degree %", "Professional Degree %", 
+                   "Max COVID-19 Weekly Death Rate", "COVID-19 Death Rate","% Black","Population", "% Asian",    "Some College Less than 1 year", "% American Indian/Alaska Native")
+
+ 
+
+# 3. Plot with ggplot2
+ggplot(top10, aes(x = reorder(boostVarNames, rel.inf), y = rel.inf)) +
+  geom_col(fill = "steelblue") +
+  coord_flip() +  # Horizontal bars
+  labs(
+    #title = "Top 10 Variable Influences",
+    x = " ",
+    y = "Relative Influence (%)"
+  ) +
+  theme_minimal(base_size = 14)
+```
+```{r}
+plot(boost.data, i = "x.one_race_white_alone")
+plot(boost.data, i = "x.estimate_total_masters_degree")
+```
+```{r}
+set.seed(123)
+
+
+yhat.boost <- predict(boost.data, newdata = testDatBoost, n.trees = 5000, type = "response")
+rf.pred <- predict(rf.data, newdata = testDat, type = "class")
+
+boost.pred <- ifelse(yhat.boost > 0.5, 1, 0)
+
+table(boost.pred, y[-train])
+
+show.gbm(boost.data)
+```
+
+5% misclassification rate. Best so far. 
+
+## Logistic Regression with Lasso
+
+```{r}
+set.seed(123)
+library(glmnet)
+
+X_lasso <- as.matrix(trainDat[, colnames(trainDat) != "y"])
+y_lasso <- trainDat$y
+
+# Step 2: Fit Lasso logistic regression with cross-validation
+lasso_fit <- cv.glmnet(
+  X_lasso, y_lasso, 
+  family = "binomial",
+  alpha = 1,       # Lasso penalty
+  nfolds = 5
+)
+
+# Step 3: Find best lambda
+best_lambda <- lasso_fit$lambda.min
+
+# Step 4: Extract selected variables
+lasso_coefs <- coef(lasso_fit, s = best_lambda)
+selected_vars <- rownames(lasso_coefs)[lasso_coefs[,1] != 0]
+selected_vars <- setdiff(selected_vars, "(Intercept)")
+
+# Step 5: Build logistic regression on selected variables
+# Subset the original data to selected variables
+X_selected <- trainDat[, selected_vars, drop = FALSE]
+
+# Build final logistic regression
+final_logit_model <- glm(
+  y ~ ., 
+  data = data.frame(y = y_lasso, X_selected), 
+  family = "binomial"
+)
+
+# Step 6: View model summary
+summary(final_logit_model)
+```
+```{r}
+set.seed(123)
+
+# 1. Prepare test data
+X_test_selected <- testDat[, selected_vars, drop = FALSE]
+
+# 2. Predict probabilities
+prob_lasso <- predict(final_logit_model, newdata = X_test_selected, type = "response")
+
+# 3. Predict classes
+pred_lasso <- ifelse(prob_lasso > 0.5, 1, 0)
+```
+
+
+
+
+
+
+
+
+
+
+# Model Comparison
+
+```{r}
+
+set.seed(123)
+
+# Load needed libraries
+library(caret)
+library(pROC)
+
+# # Define function to calculate evaluation metrics
+# evaluate_model <- function(pred_class, actual_class, pred_probs) {
+#   conf_matrix <- confusionMatrix(pred_class, actual_class, positive = "1")
+#   
+#   precision <- conf_matrix$byClass["Pos Pred Value"]
+#   recall <- conf_matrix$byClass["Sensitivity"]
+#   f1 <- 2 * (precision * recall) / (precision + recall)
+#   
+#   roc_obj <- roc(actual_class, pred_probs)
+#   auc_value <- auc(roc_obj)
+#   
+#   metrics <- list(
+#     Accuracy = conf_matrix$overall["Accuracy"],
+#     Precision = precision,
+#     Recall = recall,
+#     F1_Score = f1,
+#     AUC = auc_value
+#   )
+#   
+#   return(metrics)
+# }
+
+
+
+
+evaluate_model <- function(pred_class, actual_class, pred_probs) {
+  conf_matrix <- confusionMatrix(pred_class, actual_class, positive = "1")
+  
+  precision <- as.numeric(conf_matrix$byClass["Pos Pred Value"])
+  recall    <- as.numeric(conf_matrix$byClass["Sensitivity"])
+  f1        <- 2 * (precision * recall) / (precision + recall)
+  
+  roc_obj   <- roc(actual_class, pred_probs)
+  auc_value <- as.numeric(auc(roc_obj))
+  
+  metrics <- list(
+    Accuracy  = as.numeric(conf_matrix$overall["Accuracy"]),
+    Precision = precision,
+    Recall    = recall,
+    F1_Score  = f1,
+    AUC       = auc_value
+  )
+  
+  return(metrics)
+}
+
+
+```
+
+
+
+
+```{r}
+set.seed(123)
+
+
+# Actual Test values as Factor
+yTest <- y[-train]
+
+
+## Boost Model
+
+# # Probabilities
+prob_boost <- yhat.boost
+
+# Predicted Class
+pred_boost <- as.factor(boost.pred)
+
+
+eval_boost <- evaluate_model(pred_boost, yTest, prob_boost)
+
+
+## RF Model
+
+# Probabilities
+prob_rf <- predict(rf.data, newdata = testDat, type = "prob")[,1]
+
+# Predicted Class
+pred_rf <- rf.pred
+
+eval_rf <- evaluate_model(pred_rf, yTest, prob_rf)
+
+
+
+## CV Single Tree
+
+# Probabilities
+prob_tree <- predict(tree.data, newdata = testDat, type = "vector")[,1]
+
+# Predicted Class
+pred_tree <- tree.pred
+
+eval_tree <- evaluate_model(pred_tree, yTest, prob_tree)
+
+
+
+## Refit Logistic Regression
+
+# Predicted Class
+pred_lasso <- as.factor(pred_lasso)
+
+eval_lasso <- evaluate_model(pred_lasso, yTest, prob_lasso)
+
+
+## SVC
+# Predict on test data
+pred_svc <- predict(svc, newdata = testDat, probability = TRUE)
+
+# Extract predicted probabilities
+prob_svc <- attr(pred_svc, "probabilities")[,1]
+
+# Predicted class
+eval_svc <- evaluate_model(pred_svc, yTest, prob_svc)
+
+
+## SVM
+# Predict on test data
+pred_svm <- predict(svm_radial, newdata = testDat, probability = TRUE)
+
+# Extract predicted probabilities
+prob_svm <- attr(pred_svm, "probabilities")[,1]
+
+# Predicted class
+eval_svm <- evaluate_model(pred_svm, yTest, prob_svm)
+
+```
+
+
+```{r}
+
+
+model_evals <- rbind(eval_boost, eval_rf, eval_tree, eval_lasso, eval_svc, eval_svm) %>%
+  cbind(Model = c("Boosted Tree", "Random Forest", "Decision Tree", "Log Regression", "SVM (Linear)", "SVM (Radial)")) %>%
+as_tibble() %>%
+select(Model, everything()) %>%
+  mutate(across(where(is.list), ~ unlist(.)))
+
+write_csv(model_evals, "./cleanData/evals.csv")
+  
+```
+
+
+```{r}
+knitr::kable(model_evals, caption = "Model Evaluation Metrics")
+```
+
+
+
+## Plot ROC Curves
+
+
+
+```{r}
+library(pROC)
+library(ggplot2)
+
+
+
+roc_boost <- roc(yTest, prob_boost, levels = c("1", "0"))
+roc_rf    <- roc(yTest, prob_rf, levels = c("1", "0"))
+roc_tree  <- roc(yTest, prob_tree, levels = c("1", "0"))
+roc_lasso <- roc(yTest, prob_lasso, levels = c("1", "0"))
+roc_svc   <- roc(yTest, prob_svc, levels = c("1", "0"))
+roc_svm   <- roc(yTest, prob_svm, levels = c("1", "0"))
+
+# Combine and label with AUC
+roc_list <- list(
+  "Boosted Tree"  = roc_boost,
+  "Random Forest" = roc_rf,
+  "Decision Tree" = roc_tree,
+  "Logistic Regression" = roc_lasso,
+  "SVC" = roc_svc,
+  "SVM" = roc_svm
+)
+
+# Rename with AUC values included
+roc_list_named <- setNames(
+  roc_list,
+  sapply(names(roc_list), function(name) {
+    auc_value <- auc(roc_list[[name]])
+    sprintf("%s (AUC = %.2f)", name, auc_value)
+  })
+)
+
+
+
+
+# Create the ROC plot
+ggroc(roc_list_named, aes = c("color"), linewidth = 1.2, legacy.axes = TRUE) +
+  scale_color_brewer(palette = "Set1") +
+  labs(
+    x = "False Positive Rate",
+    y = "True Positive Rate",
+    title = "ROC Curve Comparison",
+    color = "Model"
+  ) +
+  scale_color_brewer(palette = "Set1", direction = -1) +
+  geom_abline(linetype = "dashed", color = "grey50") 
+```
+

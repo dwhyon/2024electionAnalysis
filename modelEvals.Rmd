@@ -1,0 +1,15 @@
+---
+title: "table"
+author: "David Hyon"
+date: "2025-05-16"
+output:
+  pdf_document: default
+  html_document: default
+---
+
+```{r}
+library(tidyverse)
+me <- read_csv("./cleanData/evals.csv") %>% 
+    mutate(across(where(is.numeric), ~ round(.x, 3)))
+knitr::kable(me, caption = "Model Evaluation Metrics")
+```
